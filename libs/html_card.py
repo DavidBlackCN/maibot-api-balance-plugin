@@ -6,7 +6,7 @@
 import html
 from typing import Any, List, Sequence, Tuple
 
-from .constants import CURRENCY_SYMBOLS, PLUGIN_VERSION
+from .constants import CURRENCY_SYMBOLS, PLATFORM_TYPES, PLUGIN_VERSION
 from .providers import _BalanceProvider, _BalanceRecord
 
 
@@ -239,3 +239,82 @@ def _render_provider_section(
         f'  {entries_html}'
         f'</div>'
     )
+
+
+def render_platform_list_card(
+    instances: list,
+    version: str = "",
+) -> str:
+    """渲染平台列表 HTML 卡片，附带命令用法。"""
+    rows_html: List[str] = []
+    if instances:
+        for i, inst in enumerate(instances, 1):
+            if not isinstance(inst, object):
+                continue
+            ptype = getattr(inst, "type", "?") or "?"
+            label = getattr(inst, "label", "") or ""
+            enabled = getattr(inst, "enabled", False)
+            has_key = bool((getattr(inst, "api_key", "") or "").strip())
+            url = getattr(inst, "base_url", "") or "（默认）"
+            status = "✅" if enabled else "⭕"
+            key_badge = "🔑" if has_key else "⚠️"
+            label_str = f"「{html.escape(label)}」" if label else ""
+            rows_html.append(
+                f'<tr>'
+                f'<td style="text-align:center">{i}</td>'
+                f'<td>{html.escape(ptype)}</td>'
+                f'<td>{label_str}</td>'
+                f'<td style="text-align:center">{status}</td>'
+                f'<td style="text-align:center">{key_badge}</td>'
+                f'<td style="font-size:11px;color:#6b7280">{html.escape(url)}</td>'
+                f'</tr>'
+            )
+    else:
+        rows_html.append(
+            '<tr><td colspan="6" style="text-align:center;color:#9ca3af">未配置任何平台</td></tr>'
+        )
+
+    rows = "".join(rows_html)
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(135deg, #f6f7fb 0%, #e9edf7 100%);
+  padding: 24px; color: #1f2937;
+}}
+#card {{
+  width: 652px; background: #ffffff; border-radius: 16px; padding: 20px 24px;
+  box-shadow: 0 16px 48px -16px rgba(20, 30, 60, 0.18);
+}}
+.card-title {{ font-size: 20px; font-weight: 600; margin: 0 0 14px 0; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+th {{ text-align: left; padding: 8px 6px; border-bottom: 2px solid #e5e7eb; color: #6b7280; font-weight: 500; }}
+td {{ padding: 6px 6px; border-bottom: 1px solid #f3f4f6; }}
+.commands {{
+  margin-top: 16px; padding: 12px 14px; background: #f9fafb; border-radius: 10px;
+  font-size: 12px; color: #374151; line-height: 1.8;
+}}
+.commands .cmd {{ color: #2563eb; font-weight: 500; }}
+.footer {{ text-align: right; font-size: 11px; color: #9ca3af; margin-top: 12px; }}
+</style></head>
+<body>
+<div id="card">
+  <h1 class="card-title">📋 已配置的 API 平台</h1>
+  <table>
+    <thead><tr>
+      <th style="width:30px">#</th><th>类型</th><th>名称</th>
+      <th style="width:40px">状态</th><th style="width:40px">Key</th><th>地址</th>
+    </tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  <div class="commands">
+    <span class="cmd">/余额</span> — 一键查询所有平台余额<br>
+    <span class="cmd">/添加平台 &lt;类型&gt; &lt;Key&gt; [备注名] [URL]</span> — 在线添加平台<br>
+    <span class="cmd">/删除平台 &lt;类型&gt; [备注名]</span> — 移除平台<br>
+    <span style="color:#6b7280">可用类型：{', '.join(PLATFORM_TYPES)}</span>
+  </div>
+  <div class="footer">MaiBot · API Balance Plugin v{version}</div>
+</div>
+</body></html>"""

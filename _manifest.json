@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "maibot-api-balance-plugin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "API 余额查询",
-  "description": "一键查询 DeepSeek / SiliconFlow / NewAPI 平台账号余额",
+  "description": "一键查询 DeepSeek / SiliconFlow / NewAPI / OpenRouter / Moonshot / OpenAI / OneThing / MiniMax 平台账号余额",
   "author": {
     "name": "MaiBot Community",
     "url": "https://github.com"
@@ -25,6 +25,18 @@
     "send.image",
     "render.html2png",
     "component.reload_plugin"
+  ],
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "tomli",
+      "version": ">=2.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "tomli_w",
+      "version": ">=1.0.0"
+    }
   ],
   "i18n": {
     "default_locale": "zh-CN"

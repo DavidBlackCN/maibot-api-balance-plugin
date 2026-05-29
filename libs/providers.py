@@ -11,15 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-from .constants import (
-    DEEPSEEK_BALANCE_PATH,
-    DEEPSEEK_DEFAULT_BASE_URL,
-    NEWAPI_DEFAULT_BASE_URL,
-    NEWAPI_USER_SELF_PATH,
-    PLUGIN_VERSION,
-    SILICONFLOW_DEFAULT_BASE_URL,
-    SILICONFLOW_USER_INFO_PATH,
-)
+from .constants import ENDPOINTS, PLUGIN_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +160,11 @@ class _BalanceProvider:
 
 class _DeepSeekProvider(_BalanceProvider):
     display_name = "DeepSeek"
-    path = DEEPSEEK_BALANCE_PATH
+    path = ENDPOINTS["deepseek"][1]
 
     @property
     def default_base_url(self) -> str:
-        return DEEPSEEK_DEFAULT_BASE_URL
+        return ENDPOINTS["deepseek"][0]
 
     def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
         is_available = bool(payload.get("is_available", False))
@@ -209,11 +201,11 @@ class _DeepSeekProvider(_BalanceProvider):
 
 class _SiliconFlowProvider(_BalanceProvider):
     display_name = "硅基流动"
-    path = SILICONFLOW_USER_INFO_PATH
+    path = ENDPOINTS["siliconflow"][1]
 
     @property
     def default_base_url(self) -> str:
-        return SILICONFLOW_DEFAULT_BASE_URL
+        return ENDPOINTS["siliconflow"][0]
 
     def fetch_sync(self) -> Dict[str, Any]:
         payload = super().fetch_sync()
@@ -267,7 +259,7 @@ class _NewAPIProvider(_BalanceProvider):
     """
 
     display_name = "NewAPI"
-    path = NEWAPI_USER_SELF_PATH
+    path = ENDPOINTS["newapi"][1]
 
     def __init__(
         self, api_key: str, base_url: str, timeout: int, user_id: str = ""
@@ -277,7 +269,7 @@ class _NewAPIProvider(_BalanceProvider):
 
     @property
     def default_base_url(self) -> str:
-        return NEWAPI_DEFAULT_BASE_URL
+        return ENDPOINTS["newapi"][0]
 
     def fetch_sync(self) -> Dict[str, Any]:
         # 重写以添加 New-API-User 请求头
@@ -365,3 +357,177 @@ class _NewAPIProvider(_BalanceProvider):
             record.note = f"累计请求 {request_count} 次"
 
         return record
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# OpenRouter Provider
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _OpenRouterProvider(_BalanceProvider):
+    display_name = "OpenRouter"
+    path = ENDPOINTS["openrouter"][1]
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["openrouter"][0]
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return _BalanceRecord(self.display_name, note="响应缺少 data 字段", status_ok=False)
+        total = data.get("total_credits")
+        used = data.get("total_usage")
+        remaining = None
+        if total is not None and used is not None:
+            try:
+                remaining = float(total) - float(used)
+            except (TypeError, ValueError):
+                pass
+        return _BalanceRecord(
+            display_name=self.display_name,
+            status="正常",
+            status_ok=True,
+            entries=[{
+                "currency": "USD",
+                "total": self._format_amount(remaining) if remaining is not None else self._format_amount(total),
+                "topped": self._format_amount(used),
+                "labels": {"total": "剩余 ($)", "topped": "已用 ($)"},
+            }],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Moonshot (月之暗面) Provider
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _MoonshotProvider(_BalanceProvider):
+    display_name = "月之暗面"
+    path = ENDPOINTS["moonshot"][1]
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["moonshot"][0]
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return _BalanceRecord(self.display_name, note="响应缺少 data 字段", status_ok=False)
+        available = data.get("available_balance")
+        return _BalanceRecord(
+            display_name=self.display_name,
+            status="正常",
+            status_ok=True,
+            entries=[{
+                "currency": "CNY",
+                "total": self._format_amount(available),
+                "labels": {"total": "可用余额"},
+            }],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# OpenAI Provider
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _OpenAIProvider(_BalanceProvider):
+    display_name = "OpenAI"
+    path = ENDPOINTS["openai"][1]
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["openai"][0]
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        if not isinstance(payload, dict):
+            return _BalanceRecord(self.display_name, note="响应格式异常", status_ok=False)
+        hard_limit = payload.get("hard_limit_usd")
+        soft_limit = payload.get("soft_limit_usd")
+        return _BalanceRecord(
+            display_name=self.display_name,
+            status="正常",
+            status_ok=True,
+            entries=[{
+                "currency": "USD",
+                "total": self._format_amount(hard_limit),
+                "granted": self._format_amount(soft_limit),
+                "labels": {"total": "硬上限 ($)", "granted": "软上限 ($)"},
+            }],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# OneThing (网心云) Provider
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _OneThingProvider(_BalanceProvider):
+    display_name = "OneThing"
+    path = ENDPOINTS["onething"][1]
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["onething"][0]
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return _BalanceRecord(self.display_name, note="响应缺少 data 字段", status_ok=False)
+        balance = data.get("availableBalance")
+        voucher = data.get("availableVoucherCash")
+        consumed = data.get("consumeCashTotal")
+        return _BalanceRecord(
+            display_name=self.display_name,
+            status="正常",
+            status_ok=True,
+            entries=[{
+                "currency": "CNY",
+                "total": self._format_amount(balance),
+                "granted": self._format_amount(voucher),
+                "topped": self._format_amount(consumed),
+                "labels": {"total": "可用余额", "granted": "代金券", "topped": "累计消费"},
+            }],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MiniMax Provider
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _MiniMaxProvider(_BalanceProvider):
+    display_name = "MiniMax"
+    path = ENDPOINTS["minimax"][1]
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["minimax"][0]
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        if not isinstance(payload, dict):
+            return _BalanceRecord(self.display_name, note="响应格式异常", status_ok=False)
+        remains = payload.get("model_remains")
+        if isinstance(remains, list) and len(remains) > 0:
+            info = remains[0]
+            total = info.get("current_interval_total_count")
+            usage = info.get("current_interval_usage_count")
+            remaining = None
+            if total is not None and usage is not None:
+                try:
+                    remaining = int(total) - int(usage)
+                except (TypeError, ValueError):
+                    pass
+            return _BalanceRecord(
+                display_name=self.display_name,
+                status="正常",
+                status_ok=True,
+                entries=[{
+                    "currency": "次数",
+                    "total": self._format_amount(remaining),
+                    "topped": self._format_amount(total),
+                    "labels": {"total": "剩余次数", "topped": "总额度"},
+                }],
+            )
+        return _BalanceRecord(self.display_name, note="响应缺少 model_remains 字段", status_ok=False)

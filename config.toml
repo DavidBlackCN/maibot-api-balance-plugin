@@ -1,55 +1,65 @@
 # ============================================================
-# API 余额查询插件 — 默认配置
+# API 余额查询插件 v1.1.0 — 配置
 # ============================================================
-# 可通过 MaiBot WebUI 修改，也可直接编辑此文件。
-# 修改后插件会自动应用新配置（热重载），无需重启 MaiBot。
 
 [plugin]
 name = "maibot_api_balance_plugin"
-config_version = "1.0.0"
+config_version = "1.1.0"
 enabled = true
 
 [settings]
-# 单平台请求超时秒数（1-60）
 timeout = 10
-# 是否仅允许管理员使用查询和管理命令
 admin_only = true
-# 管理员 QQ 号列表（仅 admin_only=true 时生效）
 admin_user_ids = []
-# 输出格式：text（纯文本）/ image（HTML 卡片图片）/ both（同时发送）
 output_format = "image"
 
 # ----------------------------------------------------------
-# DeepSeek 平台
-# ----------------------------------------------------------
-[deepseek]
-enabled = false
-api_key = ""
-base_url = "https://api.deepseek.com"
-
-# ----------------------------------------------------------
-# SiliconFlow（硅基流动）平台
-# ----------------------------------------------------------
-[siliconflow]
-enabled = false
-api_key = ""
-base_url = "https://api.siliconflow.cn"
-
-# ----------------------------------------------------------
-# NewAPI 多站点配置
-# 可配置多个 [[newapi_instances]] 块，每个块代表一个独立的 NewAPI 站点。
+# API 平台列表（统一格式）
+# 每个 [[api_instances]] 代表一个平台/账户，type 区分类型。
+# 支持: deepseek / siliconflow / newapi / openrouter / moonshot / openai / onething / minimax
 # ----------------------------------------------------------
 
-# 示例（取消注释并填入实际信息）：
-# [[newapi_instances]]
+# [[api_instances]]
+# type = "deepseek"
+# enabled = true
+# label = "个人号"
+# api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "siliconflow"
+# enabled = true
+# label = "主账户"
+# api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "newapi"
 # enabled = true
 # label = "自建站A"
-# user_id = "10001"  # 在用户管理页面查看
-# api_key = "your-access-token"  # 系统访问令牌，不是 sk- 开头的 API Key！
+# api_key = "系统访问令牌"
 # base_url = "https://my-newapi.example.com"
-#
-# [[newapi_instances]]
+# user_id = "10001"
+
+# [[api_instances]]
+# type = "openrouter"
 # enabled = true
-# label = "公益站B"
-# api_key = "sk-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-# base_url = "https://public-api.example.com"
+# api_key = "sk-or-v1-xxx"
+
+# [[api_instances]]
+# type = "moonshot"
+# enabled = true
+# api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "openai"
+# enabled = true
+# api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "onething"
+# enabled = true
+# api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "minimax"
+# enabled = true
+# api_key = "sk-xxx"

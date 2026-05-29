@@ -29,26 +29,47 @@ from libs.constants import (
     OUTPUT_FORMAT_IMAGE,
     OUTPUT_FORMAT_TEXT,
     OUTPUT_FORMATS,
+    PLATFORM_TYPES,
     PLUGIN_VERSION,
 )
-from libs.html_card import render_html_card
+from libs.html_card import render_html_card, render_platform_list_card
 from libs.providers import (
     _BalanceProvider,
     _DeepSeekProvider,
+    _MiniMaxProvider,
+    _MoonshotProvider,
     _NewAPIProvider,
+    _OneThingProvider,
+    _OpenAIProvider,
+    _OpenRouterProvider,
     _SiliconFlowProvider,
 )
 from libs.text_report import format_text_report
 
 logger = logging.getLogger(__name__)
 
-# 支持的平台类型 → 配置 Key 映射
-_PLATFORM_TYPES = ("deepseek", "siliconflow", "newapi")
+# 平台 type → Provider 类映射
+_PROVIDER_MAP = {
+    "deepseek": _DeepSeekProvider,
+    "siliconflow": _SiliconFlowProvider,
+    "newapi": _NewAPIProvider,
+    "openrouter": _OpenRouterProvider,
+    "moonshot": _MoonshotProvider,
+    "openai": _OpenAIProvider,
+    "onething": _OneThingProvider,
+    "minimax": _MiniMaxProvider,
+}
 
-# 平台类型 → 配置 Section 名
-_PLATFORM_SECTION_MAP = {
-    "deepseek": "deepseek",
-    "siliconflow": "siliconflow",
+# 平台 type → 中文显示名
+_PLATFORM_DISPLAY_NAMES = {
+    "deepseek": "DeepSeek",
+    "siliconflow": "硅基流动",
+    "newapi": "NewAPI",
+    "openrouter": "OpenRouter",
+    "moonshot": "月之暗面",
+    "openai": "OpenAI",
+    "onething": "OneThing",
+    "minimax": "MiniMax",
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -189,65 +210,54 @@ class APIBalancePlugin(MaiBotPlugin):
         settings = self.config.settings
         result: List[_BalanceProvider] = []
 
-        # DeepSeek
-        if self.config.deepseek.enabled:
-            api_key = self.config.deepseek.api_key.strip()
-            if api_key:
-                result.append(
-                    _DeepSeekProvider(
-                        api_key=api_key,
-                        base_url=self.config.deepseek.base_url.strip(),
-                        timeout=settings.timeout,
-                    )
-                )
-            else:
-                logger.warning(
-                    "DeepSeek 已启用但 api_key 为空，已跳过查询"
-                )
-
-        # SiliconFlow
-        if self.config.siliconflow.enabled:
-            api_key = self.config.siliconflow.api_key.strip()
-            if api_key:
-                result.append(
-                    _SiliconFlowProvider(
-                        api_key=api_key,
-                        base_url=self.config.siliconflow.base_url.strip(),
-                        timeout=settings.timeout,
-                    )
-                )
-            else:
-                logger.warning(
-                    "硅基流动已启用但 api_key 为空，已跳过查询"
-                )
-
-        # NewAPI 多实例
-        for inst in self.config.newapi_instances:
+        for inst in self.config.api_instances:
             if not inst.enabled:
                 continue
+            ptype = inst.type.strip().lower()
+            if ptype not in _PROVIDER_MAP:
+                logger.warning("未知平台类型「%s」，已跳过", ptype)
+                continue
+
             api_key = inst.api_key.strip()
-            user_id = inst.user_id.strip()
             if not api_key:
+                plat_name = _PLATFORM_DISPLAY_NAMES.get(ptype, ptype)
                 logger.warning(
-                    "NewAPI 实例「%s」已启用但 api_key 为空，已跳过查询",
-                    inst.label or "(未命名)",
+                    "%s「%s」已启用但 api_key 为空，已跳过",
+                    plat_name, inst.label or "(未命名)",
                 )
                 continue
-            if not user_id:
-                logger.warning(
-                    "NewAPI 实例「%s」已启用但 user_id 为空，已跳过查询",
-                    inst.label or "(未命名)",
+
+            base_url = inst.base_url.strip()
+            provider_cls = _PROVIDER_MAP[ptype]
+
+            # NewAPI 特殊处理：需要 user_id
+            if ptype == "newapi":
+                user_id = inst.user_id.strip()
+                if not user_id:
+                    logger.warning(
+                        "NewAPI「%s」已启用但 user_id 为空，已跳过",
+                        inst.label or "(未命名)",
+                    )
+                    continue
+                provider = provider_cls(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=settings.timeout,
+                    user_id=user_id,
                 )
-                continue
-            provider = _NewAPIProvider(
-                api_key=api_key,
-                base_url=inst.base_url.strip(),
-                timeout=settings.timeout,
-                user_id=user_id,
-            )
-            # 使用实例 label 作为展示名
-            label = inst.label.strip() or "NewAPI"
-            provider.display_name = f"NewAPI ({label})"
+            else:
+                provider = provider_cls(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=settings.timeout,
+                )
+
+            # 使用 label 作为展示名
+            label = inst.label.strip()
+            if label:
+                provider.display_name = (
+                    f"{_PLATFORM_DISPLAY_NAMES.get(ptype, ptype)} ({label})"
+                )
             result.append(provider)
 
         return result
@@ -412,9 +422,8 @@ class APIBalancePlugin(MaiBotPlugin):
     ):
         """添加平台：/添加平台 <类型> <API Key/实例名> [参数…]
 
-        - /添加平台 deepseek sk-xxx [base_url]
-        - /添加平台 siliconflow sk-xxx [base_url]
-        - /添加平台 newapi <实例名> <用户ID> <系统访问令牌> [base_url]
+        - /添加平台 <类型> <API Key> [备注名] [URL]
+        - /添加平台 newapi <API Key> <用户ID> [备注名] [URL]
         """
         if self.config.settings.admin_only and not self._check_admin(user_id):
             await self.ctx.send.text(
@@ -429,9 +438,9 @@ class APIBalancePlugin(MaiBotPlugin):
             await self.ctx.send.text(
                 "❌ 格式错误。\n"
                 "用法：\n"
-                "/添加平台 deepseek <API Key> [URL]\n"
-                "/添加平台 siliconflow <API Key> [URL]\n"
-                "/添加平台 newapi <实例名> <用户ID> <系统访问令牌> [URL]",
+                "/添加平台 <类型> <API Key> [备注名] [URL]\n"
+                "类型：deepseek / siliconflow / newapi / openrouter / moonshot / openai / onething / minimax\n"
+                "NewAPI 需额外提供用户ID：/添加平台 newapi <令牌> <用户ID> [备注名] [URL]",
                 stream_id,
             )
             return False, "格式错误", 1
@@ -439,10 +448,10 @@ class APIBalancePlugin(MaiBotPlugin):
         platform_type = match.group(1).lower()
         rest = match.group(2).strip()
 
-        if platform_type not in _PLATFORM_TYPES:
+        if platform_type not in PLATFORM_TYPES:
             await self.ctx.send.text(
                 f"❌ 不支持的平台类型「{platform_type}」。"
-                f"支持：{', '.join(_PLATFORM_TYPES)}",
+                f"支持：{', '.join(PLATFORM_TYPES)}",
                 stream_id,
             )
             return False, "不支持的平台类型", 1
@@ -457,64 +466,51 @@ class APIBalancePlugin(MaiBotPlugin):
             return False, "读取配置失败", 1
 
         if platform_type == "newapi":
-            # 格式: /添加平台 newapi <实例名> <用户ID> <系统访问令牌> [URL]
+            # /添加平台 newapi <系统访问令牌> <用户ID> [备注名] [URL]
             parts = rest.split(maxsplit=3)
-            if len(parts) < 3:
+            if len(parts) < 2:
                 await self.ctx.send.text(
-                    "❌ NewAPI 格式：/添加平台 newapi <实例名> <用户ID> <系统访问令牌> [URL]\n"
-                    "系统访问令牌在 NewAPI 站点「个人设置」→「生成系统访问令牌」获取。\n"
-                    "注意：不是 sk- 开头的 API Key！",
+                    "❌ NewAPI 格式：/添加平台 newapi <令牌> <用户ID> [备注名] [URL]\n"
+                    "令牌在站点「个人设置」→「生成系统访问令牌」获取。",
                     stream_id,
                 )
                 return False, "参数不足", 1
-            label = parts[0]
+            api_key = parts[0]
             user_id = parts[1]
-            api_key = parts[2]
-            base_url = parts[3] if len(parts) > 3 else "https://api.newapi.pro"
-
-            # 添加到 newapi_instances 列表
-            instances = data.get("newapi_instances", [])
-            if not isinstance(instances, list):
-                instances = []
-            instances.append({
-                "enabled": True,
-                "label": label,
-                "user_id": user_id,
-                "api_key": api_key,
-                "base_url": base_url,
-            })
-            data["newapi_instances"] = instances
-
+            label = parts[2] if len(parts) > 2 else ""
+            base_url = parts[3] if len(parts) > 3 else ""
+            new_inst = {"type": "newapi", "enabled": True, "api_key": api_key, "user_id": user_id}
+            if label:
+                new_inst["label"] = label
+            if base_url:
+                new_inst["base_url"] = base_url
             await self.ctx.send.text(
-                f"✅ 已添加 NewAPI 实例「{label}」\n"
-                f"   用户ID：{user_id}\n"
-                f"   地址：{base_url}",
+                f"✅ 已添加 NewAPI（用户ID:{user_id}）" + (f"「{label}」" if label else ""),
                 stream_id,
             )
         else:
-            # deepseek / siliconflow
-            parts = rest.split(maxsplit=1)
+            # 通用格式: /添加平台 <类型> <API Key> [备注名] [URL]
+            parts = rest.split(maxsplit=2)
             api_key = parts[0]
-            base_url = parts[1] if len(parts) > 1 else ""
-
-            section_name = _PLATFORM_SECTION_MAP[platform_type]
-            section = data.get(section_name, {})
-            if not isinstance(section, dict):
-                section = {}
-            section["enabled"] = True
-            section["api_key"] = api_key
+            label = parts[1] if len(parts) > 1 else ""
+            base_url = parts[2] if len(parts) > 2 else ""
+            new_inst = {"type": platform_type, "enabled": True, "api_key": api_key}
+            if label:
+                new_inst["label"] = label
             if base_url:
-                section["base_url"] = base_url
-            data[section_name] = section
-
-            display_name = (
-                "DeepSeek" if platform_type == "deepseek" else "硅基流动"
-            )
+                new_inst["base_url"] = base_url
+            display_name = _PLATFORM_DISPLAY_NAMES.get(platform_type, platform_type)
             await self.ctx.send.text(
-                f"✅ 已添加 {display_name} 平台\n"
-                + (f"   地址：{base_url}" if base_url else ""),
+                f"✅ 已添加 {display_name}" + (f"「{label}」" if label else ""),
                 stream_id,
             )
+
+        # 添加到 api_instances 列表
+        instances = data.get("api_instances", [])
+        if not isinstance(instances, list):
+            instances = []
+        instances.append(new_inst)
+        data["api_instances"] = instances
 
         # 确保基础 Section 存在
         data.setdefault("plugin", {}).setdefault("enabled", True)
@@ -577,10 +573,10 @@ class APIBalancePlugin(MaiBotPlugin):
         platform_type = match.group(1).lower()
         instance_name = (match.group(2) or "").strip()
 
-        if platform_type not in _PLATFORM_TYPES:
+        if platform_type not in PLATFORM_TYPES:
             await self.ctx.send.text(
                 f"❌ 不支持的平台类型「{platform_type}」。"
-                f"支持：{', '.join(_PLATFORM_TYPES)}",
+                f"支持：{', '.join(PLATFORM_TYPES)}",
                 stream_id,
             )
             return False, "不支持的平台类型", 1
@@ -594,49 +590,35 @@ class APIBalancePlugin(MaiBotPlugin):
             )
             return False, "读取配置失败", 1
 
-        if platform_type == "newapi":
-            if not instance_name:
-                await self.ctx.send.text(
-                    "❌ 删除 NewAPI 实例需要指定实例名。\n"
-                    "用法：/删除平台 newapi <实例名>\n"
-                    "可先用 /平台列表 查看已有实例。",
-                    stream_id,
-                )
-                return False, "缺少实例名", 1
+        instances = data.get("api_instances", [])
+        if not isinstance(instances, list):
+            instances = []
 
-            instances = data.get("newapi_instances", [])
-            if not isinstance(instances, list):
-                instances = []
-            new_instances = [
-                inst
-                for inst in instances
-                if isinstance(inst, dict)
-                and inst.get("label") != instance_name
-            ]
-            if len(new_instances) == len(instances):
-                await self.ctx.send.text(
-                    f"❌ 未找到名为「{instance_name}」的 NewAPI 实例",
-                    stream_id,
-                )
-                return False, "实例不存在", 1
-            data["newapi_instances"] = new_instances
+        removed = []
+        new_instances = []
+        for inst in instances:
+            if isinstance(inst, dict) and inst.get("type") == platform_type:
+                if instance_name:
+                    if inst.get("label") == instance_name:
+                        removed.append(inst)
+                        continue
+                else:
+                    removed.append(inst)
+                    continue
+            new_instances.append(inst)
 
+        if not removed:
+            hint = f"「{instance_name}」" if instance_name else "所有实例"
             await self.ctx.send.text(
-                f"✅ 已删除 NewAPI 实例「{instance_name}」", stream_id
+                f"❌ 未找到类型为「{platform_type}」的{hint}", stream_id
             )
-        else:
-            section_name = _PLATFORM_SECTION_MAP[platform_type]
-            section = data.get(section_name, {})
-            if isinstance(section, dict):
-                section["enabled"] = False
-            data[section_name] = section
+            return False, "未找到匹配项", 1
 
-            display_name = (
-                "DeepSeek" if platform_type == "deepseek" else "硅基流动"
-            )
-            await self.ctx.send.text(
-                f"✅ 已禁用 {display_name} 平台", stream_id
-            )
+        data["api_instances"] = new_instances
+        display_name = _PLATFORM_DISPLAY_NAMES.get(platform_type, platform_type)
+        await self.ctx.send.text(
+            f"✅ 已删除 {len(removed)} 个 {display_name} 实例", stream_id
+        )
 
         try:
             _write_config_toml(data)
@@ -677,49 +659,55 @@ class APIBalancePlugin(MaiBotPlugin):
             )
             return False, f"用户 {user_id} 无权限", 1
 
+        instances = self.config.api_instances
+        fmt = (self.config.settings.output_format or OUTPUT_FORMAT_TEXT).lower()
+
+        # 构建文本行
         lines: List[str] = ["📋 已配置的 API 平台"]
-
-        # DeepSeek
-        ds = self.config.deepseek
-        ds_status = "✅ 启用" if ds.enabled else "⭕ 禁用"
-        ds_key = (
-            "已配置" if ds.api_key.strip() else "⚠️ 未配置 Key"
-        )
-        lines.append(f"【DeepSeek】{ds_status} | {ds_key} | {ds.base_url}")
-
-        # SiliconFlow
-        sf = self.config.siliconflow
-        sf_status = "✅ 启用" if sf.enabled else "⭕ 禁用"
-        sf_key = (
-            "已配置" if sf.api_key.strip() else "⚠️ 未配置 Key"
-        )
-        lines.append(f"【硅基流动】{sf_status} | {sf_key} | {sf.base_url}")
-
-        # NewAPI 实例
-        lines.append("———")
-        lines.append("【NewAPI 多站点】")
-        if self.config.newapi_instances:
-            for i, inst in enumerate(self.config.newapi_instances, 1):
-                inst_status = "✅ 启用" if inst.enabled else "⭕ 禁用"
-                inst_name = inst.label or f"实例{i}"
-                inst_uid = inst.user_id.strip() if inst.user_id else "?"
-                inst_key = (
-                    "已配置" if inst.api_key.strip() else "⚠️ 未配置 Key"
-                )
+        if instances:
+            for i, inst in enumerate(instances, 1):
+                ptype = inst.type or "未知"
+                plat_name = _PLATFORM_DISPLAY_NAMES.get(ptype, ptype)
+                status = "✅" if inst.enabled else "⭕"
+                label = f"「{inst.label}」" if inst.label else ""
+                key_ok = "已配置" if inst.api_key.strip() else "⚠️ 未配置 Key"
+                url = inst.base_url or "(默认)"
+                extra = ""
+                if ptype == "newapi" and inst.user_id:
+                    extra = f" UID:{inst.user_id}"
                 lines.append(
-                    f"  {i}. {inst_name} (UID:{inst_uid}) {inst_status} | {inst_key} | {inst.base_url}"
+                    f"{i}. [{ptype}] {plat_name}{label} {status} | {key_ok} | {url}{extra}"
                 )
         else:
-            lines.append("  （无 NewAPI 实例）")
+            lines.append("  （未配置任何平台）")
 
-        # 通用设置
         lines.append("———")
-        settings = self.config.settings
-        lines.append(f"超时：{settings.timeout}秒")
-        lines.append(f"管理员限制：{'开启' if settings.admin_only else '关闭'}")
-        lines.append(f"输出格式：{settings.output_format}")
+        lines.append("命令：/余额 | /添加平台 <类型> <Key> | /删除平台 <类型>")
+        lines.append(f"可用类型：{', '.join(PLATFORM_TYPES)}")
 
-        await self.ctx.send.text("\n".join(lines), stream_id)
+        text_output = "\n".join(lines)
+
+        # 图片输出
+        if fmt in (OUTPUT_FORMAT_IMAGE, OUTPUT_FORMAT_BOTH):
+            try:
+                html = render_platform_list_card(instances, PLUGIN_VERSION)
+                rendered = await self.ctx.render.html2png(
+                    html,
+                    selector="#card",
+                    viewport={"width": 680, "height": 480},
+                    device_scale_factor=2.0,
+                )
+                image_b64 = (rendered or {}).get("image_base64")
+                if image_b64:
+                    await self.ctx.send.image(image_b64, stream_id)
+                else:
+                    await self.ctx.send.text(text_output, stream_id)
+            except Exception as exc:
+                logger.warning("平台列表图片渲染失败: %s", exc)
+                await self.ctx.send.text(text_output, stream_id)
+        else:
+            await self.ctx.send.text(text_output, stream_id)
+
         return True, "平台列表", 1
 
 
