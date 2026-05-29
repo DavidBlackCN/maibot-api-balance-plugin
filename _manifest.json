@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "id": "maibot-api-balance-plugin",
+  "version": "1.0.0",
+  "name": "API 余额查询",
+  "description": "一键查询 DeepSeek / SiliconFlow / NewAPI 平台账号余额",
+  "author": {
+    "name": "MaiBot Community",
+    "url": "https://github.com"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/user/maibot-api-balance-plugin"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "2.99.99"
+  },
+  "sdk": {
+    "min_version": "1.0.0",
+    "max_version": "2.99.99"
+  },
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "render.html2png",
+    "component.reload_plugin"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
