@@ -141,7 +141,7 @@ uv pip install playwright
 # 在 MaiBot 的 uv 环境中安装 Chromium
 uv run playwright install chromium
 ```
-<details>
+</details>
 
 ### Q: NewAPI 查询显示「业务失败：Unauthorized」？
 A: NewAPI 需要的是 **系统访问令牌**（在站点「个人设置」→「生成系统访问令牌」获取），
