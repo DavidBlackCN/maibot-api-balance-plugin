@@ -126,6 +126,23 @@ user_id = "10001"
 ### Q: 图片卡片渲染失败？
 A: 确认 MaiBot 环境中已安装 Playwright Chromium。失败后会自动回退为文本模式，不影响使用。
 
+<details>
+
+<summary>关于uv环境下安装Playwright Chromium的一些说明</summary>
+Chromium 不需要在全局环境安装，需要让其出现在 MaiBot 渲染服务查找的路径下。
+
+``` bash
+# 设置 MaiBot 期望的浏览器安装路径
+export PLAYWRIGHT_BROWSERS_PATH=/your-maibot-path/data/playwright-browsers
+
+# 在 MaiBot 的 uv 环境中安装 playwright
+uv pip install playwright
+
+# 在 MaiBot 的 uv 环境中安装 Chromium
+uv run playwright install chromium
+```
+<details>
+
 ### Q: NewAPI 查询显示「业务失败：Unauthorized」？
 A: NewAPI 需要的是 **系统访问令牌**（在站点「个人设置」→「生成系统访问令牌」获取），
 **不是** sk- 开头的 API Key！两者是不同的：
