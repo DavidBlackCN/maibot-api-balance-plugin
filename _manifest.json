@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "id": "maibot-api-balance-plugin",
+  "id": "davidblackcn.maibot-api-balance-plugin",
   "version": "1.1.0",
   "name": "API 余额查询",
   "description": "一键查询 DeepSeek / SiliconFlow / NewAPI / OpenRouter / Moonshot / OpenAI / OneThing / MiniMax 平台账号余额",
