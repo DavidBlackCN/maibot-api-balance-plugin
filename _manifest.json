@@ -3,14 +3,17 @@
   "id": "davidblackcn.maibot-api-balance-plugin",
   "version": "1.1.0",
   "name": "API 余额查询",
-  "description": "一键查询 DeepSeek / SiliconFlow / NewAPI / OpenRouter / Moonshot / OpenAI / OneThing / MiniMax 平台账号余额",
+  "description": "一键查询众多API平台账号余额",
   "author": {
-    "name": "MaiBot Community",
-    "url": "https://github.com"
+    "name": "DavidBlackCN",
+    "url": "https://github.com/DavidBlackCN"
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/user/maibot-api-balance-plugin"
+    "repository": "https://github.com/DavidBlackCN/maibot-api-balance-plugin",
+    "homepage": "https://github.com/DavidBlackCN/maibot-api-balance-plugin",
+    "documentation": "https://github.com/DavidBlackCN/maibot-api-balance-plugin/blob/main/README.md",
+    "issues": "https://github.com/DavidBlackCN/maibot-api-balance-plugin/issues"
   },
   "host_application": {
     "min_version": "1.0.0",
