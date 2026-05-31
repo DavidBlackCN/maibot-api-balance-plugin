@@ -2,6 +2,12 @@
 
 一键查询众多API平台的账号余额，支持配置热重载和 Web UI 配置。
 
+![余额查询](https://cdn.jsdelivr.net/gh/DavidBlackCN/maibot-api-balance-plugin@main/image/余额.png)
+
+---
+
+![平台列表](https://cdn.jsdelivr.net/gh/DavidBlackCN/maibot-api-balance-plugin@main/image/平台列表.png)
+
 ## 支持的平台
 
 | 平台 | 查询方式 | 说明 |
