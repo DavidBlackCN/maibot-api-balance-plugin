@@ -33,12 +33,12 @@
     {
       "type": "python_package",
       "name": "tomli",
-      "version": ">=2.0.0"
+      "version_spec": ">=2.0.0"
     },
     {
       "type": "python_package",
       "name": "tomli_w",
-      "version": ">=1.0.0"
+      "version_spec": ">=1.0.0"
     }
   ],
   "i18n": {
