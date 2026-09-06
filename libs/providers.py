@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import hmac
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .constants import ENDPOINTS, PLUGIN_VERSION
@@ -129,6 +133,14 @@ class _BalanceProvider:
         except ValueError:
             return raw[:200]
         if isinstance(parsed, dict):
+            metadata = parsed.get("ResponseMetadata")
+            metadata_error = metadata.get("Error") if isinstance(metadata, dict) else None
+            if isinstance(metadata_error, dict):
+                code = str(metadata_error.get("Code") or "").strip()
+                message = str(metadata_error.get("Message") or "").strip()
+                detail = "：".join(part for part in (code, message) if part)
+                if detail:
+                    return detail[:200]
             err = parsed.get("error")
             if isinstance(err, dict):
                 msg = str(err.get("message") or "")
@@ -240,6 +252,141 @@ class _SiliconFlowProvider(_BalanceProvider):
                     "labels": {"granted": "代金券", "topped": "余额"},
                 }
             ],
+        )
+
+
+class _VolcEngineProvider(_BalanceProvider):
+    """火山引擎费用中心余额（火山方舟的扣费账户）。"""
+
+    display_name = "火山方舟"
+    path = ENDPOINTS["volcengine"][1]
+    service = "billing"
+    # 费用中心是全局服务，但其签名域使用 cn-north-1。
+    region = "cn-north-1"
+
+    def __init__(
+        self,
+        access_key_id: str,
+        secret_access_key: str,
+        base_url: str,
+        timeout: int,
+    ) -> None:
+        super().__init__("", base_url, timeout)
+        self.access_key_id = access_key_id
+        self.secret_access_key = secret_access_key
+
+    @property
+    def default_base_url(self) -> str:
+        return ENDPOINTS["volcengine"][0]
+
+    @staticmethod
+    def _sign(key: bytes, message: str) -> bytes:
+        return hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
+
+    def _build_signed_request(self, now: Optional[datetime] = None) -> urllib.request.Request:
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        x_date = moment.strftime("%Y%m%dT%H%M%SZ")
+        short_date = moment.strftime("%Y%m%d")
+        query = urllib.parse.urlencode(sorted({
+            "Action": "QueryBalanceAcct",
+            "Version": "2022-01-01",
+        }.items()))
+        parsed = urllib.parse.urlsplit(self.base_url)
+        host = parsed.netloc
+        canonical_uri = parsed.path.rstrip("/") + "/"
+        payload_hash = hashlib.sha256(b"").hexdigest()
+        canonical_headers = (
+            "content-type:application/json\n"
+            f"host:{host}\n"
+            f"x-content-sha256:{payload_hash}\n"
+            f"x-date:{x_date}\n"
+        )
+        signed_headers = "content-type;host;x-content-sha256;x-date"
+        canonical_request = "\n".join((
+            "GET", canonical_uri, query, canonical_headers, signed_headers, payload_hash,
+        ))
+        credential_scope = f"{short_date}/{self.region}/{self.service}/request"
+        string_to_sign = "\n".join((
+            "HMAC-SHA256",
+            x_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ))
+        k_date = self._sign(self.secret_access_key.encode("utf-8"), short_date)
+        k_region = self._sign(k_date, self.region)
+        k_service = self._sign(k_region, self.service)
+        k_signing = self._sign(k_service, "request")
+        signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+        authorization = (
+            f"HMAC-SHA256 Credential={self.access_key_id}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
+        )
+        url = f"{self.base_url}{canonical_uri}?{query}"
+        return urllib.request.Request(url, method="GET", headers={
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+            "Host": host,
+            "User-Agent": self.user_agent,
+            "X-Content-Sha256": payload_hash,
+            "X-Date": x_date,
+        })
+
+    def fetch_sync(self) -> Dict[str, Any]:
+        req = self._build_signed_request()
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raise _BalanceHTTPError(exc.code, self._extract_http_error_detail(exc))
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise _BalanceRequestError(f"请求失败：{reason}")
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            raise _BalanceRequestError(f"响应不是合法 JSON：{exc}")
+        metadata = payload.get("ResponseMetadata") if isinstance(payload, dict) else None
+        error = metadata.get("Error") if isinstance(metadata, dict) else None
+        if isinstance(error, dict):
+            code = str(error.get("Code") or "未知错误")
+            message = str(error.get("Message") or "火山引擎返回业务失败")
+            raise _BalanceBusinessError(f"{code}：{message}")
+        return payload
+
+    def to_record(self, payload: Dict[str, Any]) -> _BalanceRecord:
+        result = payload.get("Result") if isinstance(payload, dict) else None
+        if not isinstance(result, dict):
+            return _BalanceRecord(self.display_name, status="响应异常", status_ok=False, note="响应缺少 Result 字段")
+        available = result.get("AvailableBalance")
+        cash = result.get("CashBalance")
+        credit = result.get("CreditLimit")
+        if available is None and cash is None and credit is None:
+            return _BalanceRecord(self.display_name, status="响应异常", status_ok=False, note="响应未包含余额字段")
+        status_ok = True
+        if available is not None:
+            try:
+                status_ok = float(available) >= 0
+            except (TypeError, ValueError):
+                status_ok = False
+        notes = ["火山引擎账户余额（方舟扣费账户）"]
+        arrears = self._format_amount(result.get("ArrearsBalance"))
+        frozen = self._format_amount(result.get("FreezeAmount"))
+        if arrears is not None:
+            notes.append(f"欠费 ￥{arrears}")
+        if frozen is not None:
+            notes.append(f"冻结 ￥{frozen}")
+        return _BalanceRecord(
+            display_name=self.display_name,
+            status="正常" if status_ok else "余额异常",
+            status_ok=status_ok,
+            note="；".join(notes),
+            entries=[{
+                "currency": "CNY",
+                "total": self._format_amount(available),
+                "granted": self._format_amount(cash),
+                "topped": self._format_amount(credit),
+                "labels": {"total": "可用余额", "granted": "现金余额", "topped": "信控额度"},
+            }],
         )
 
 

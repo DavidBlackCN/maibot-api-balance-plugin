@@ -1,7 +1,7 @@
 """MaiBot API 余额查询插件 — 入口文件
 
-通过聊天命令 /余额 并行查询 DeepSeek / SiliconFlow / NewAPI 平台的账号余额，
-统一汇总输出（文本或 HTML 图片卡片）。支持在线命令管理平台配置并自动重载。
+通过聊天命令 /余额 并行查询多个 API 平台的账号余额，统一汇总输出
+（文本或 HTML 图片卡片）。支持在线命令管理平台配置、自动重载和每日群播报。
 
 装饰器：优先使用 @Command（斜杠命令）
 配置：PluginConfigBase + Field，用户可见文本全部简体中文
@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,6 +32,7 @@ from libs.constants import (
     OUTPUT_FORMAT_TEXT,
     OUTPUT_FORMATS,
     PLATFORM_TYPES,
+    KNOWN_PLATFORM_TYPES,
     PLUGIN_VERSION,
 )
 from libs.html_card import render_html_card, render_platform_list_card
@@ -43,6 +46,8 @@ from libs.providers import (
     _OpenAIProvider,
     _OpenRouterProvider,
     _SiliconFlowProvider,
+    _VolcEngineProvider,
+    _BalanceRecord,
 )
 from libs.text_report import format_text_report
 
@@ -58,6 +63,7 @@ _PROVIDER_MAP = {
     "openai": _OpenAIProvider,
     "onething": _OneThingProvider,
     "minimax": _MiniMaxProvider,
+    "volcengine": _VolcEngineProvider,
 }
 
 # 平台 type → 中文显示名
@@ -70,7 +76,11 @@ _PLATFORM_DISPLAY_NAMES = {
     "openai": "OpenAI",
     "onething": "OneThing",
     "minimax": "MiniMax",
+    "volcengine": "火山方舟",
 }
+
+_CHINA_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+_BROADCAST_STATE_PATH = _PLUGIN_DIR / ".broadcast_state.json"
 
 # ═══════════════════════════════════════════════════════════════════════
 # TOML 读写工具（用于在线管理命令写回 config.toml）
@@ -167,8 +177,7 @@ def _toml_value(v: Any) -> str:
 class APIBalancePlugin(MaiBotPlugin):
     """API 平台余额查询插件。
 
-    支持 DeepSeek / SiliconFlow / NewAPI 三大平台，
-    通过 /余额 命令并行查询并汇总输出。
+    通过 /余额 命令并行查询多个平台并汇总输出。
     """
 
     config_model = LLMBalanceConfig
@@ -176,16 +185,19 @@ class APIBalancePlugin(MaiBotPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._admin_set: set[str] = set()
+        self._broadcast_task: Optional[asyncio.Task] = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────
 
     async def on_load(self) -> None:
         self._refresh_admin_cache()
+        self._start_broadcast_task()
         logger.info(
             "API 余额查询插件(v%s) 初始化完成。", PLUGIN_VERSION
         )
 
     async def on_unload(self) -> None:
+        await self._stop_broadcast_task()
         logger.info("API 余额查询插件已卸载。")
 
     async def on_config_update(
@@ -193,6 +205,8 @@ class APIBalancePlugin(MaiBotPlugin):
     ) -> None:
         if scope == "self":
             self._refresh_admin_cache()
+            await self._stop_broadcast_task()
+            self._start_broadcast_task()
             logger.info("API 余额查询插件配置已更新: version=%s", version)
 
     # ── 内部辅助 ──────────────────────────────────────────────────────
@@ -214,8 +228,29 @@ class APIBalancePlugin(MaiBotPlugin):
             if not inst.enabled:
                 continue
             ptype = inst.type.strip().lower()
+            if ptype == "siliconflow":
+                logger.info("硅基流动接口暂不可用，跳过实例「%s」", inst.label or "(未命名)")
+                continue
             if ptype not in _PROVIDER_MAP:
                 logger.warning("未知平台类型「%s」，已跳过", ptype)
+                continue
+
+            if ptype == "volcengine":
+                access_key_id = inst.access_key_id.strip()
+                secret_access_key = inst.secret_access_key.strip()
+                if not access_key_id or not secret_access_key:
+                    logger.warning("火山方舟「%s」缺少 AK/SK，已跳过", inst.label or "(未命名)")
+                    continue
+                provider = _VolcEngineProvider(
+                    access_key_id=access_key_id,
+                    secret_access_key=secret_access_key,
+                    base_url=inst.base_url.strip(),
+                    timeout=settings.timeout,
+                )
+                label = inst.label.strip()
+                if label:
+                    provider.display_name = f"火山方舟 ({label})"
+                result.append(provider)
                 continue
 
             api_key = inst.api_key.strip()
@@ -262,6 +297,175 @@ class APIBalancePlugin(MaiBotPlugin):
 
         return result
 
+    async def _query_records(self, providers: Sequence[_BalanceProvider]) -> List[Tuple[_BalanceProvider, Any]]:
+        """并行查询 Provider，并统一转换为展示记录。"""
+        async def _run(provider: _BalanceProvider) -> Tuple[_BalanceProvider, Any]:
+            try:
+                return provider, await asyncio.to_thread(provider.fetch_sync)
+            except Exception as exc:
+                return provider, exc
+
+        results = await asyncio.gather(*[_run(p) for p in providers])
+        records: List[Tuple[_BalanceProvider, Any]] = []
+        for provider, item in results:
+            if isinstance(item, Exception):
+                records.append((provider, item))
+                continue
+            try:
+                records.append((provider, provider.to_record(item)))
+            except Exception as exc:
+                logger.error("%s 解析响应失败: %s", provider.display_name, exc, exc_info=True)
+                records.append((provider, exc))
+        return records
+
+    @staticmethod
+    def _parse_broadcast_time(value: str) -> Optional[Tuple[int, int]]:
+        match = re.fullmatch(r"(\d{2}):(\d{2})", (value or "").strip())
+        if not match:
+            return None
+        hour, minute = int(match.group(1)), int(match.group(2))
+        return (hour, minute) if hour < 24 and minute < 60 else None
+
+    def _broadcast_groups(self) -> List[str]:
+        return list(dict.fromkeys(
+            str(value).strip() for value in self.config.broadcast.group_ids if str(value).strip()
+        ))
+
+    def _start_broadcast_task(self) -> None:
+        broadcast = self.config.broadcast
+        if not broadcast.enabled:
+            return
+        if not self._broadcast_groups():
+            logger.warning("定时播报已启用，但群聊列表为空")
+            return
+        if self._parse_broadcast_time(broadcast.time) is None:
+            logger.error("定时播报时间无效：%r（应为 HH:MM）", broadcast.time)
+            return
+        self._broadcast_task = asyncio.create_task(self._broadcast_loop(), name="api-balance-broadcast")
+
+    async def _stop_broadcast_task(self) -> None:
+        task, self._broadcast_task = self._broadcast_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def _load_broadcast_state(self) -> Dict[str, str]:
+        try:
+            data = json.loads(_BROADCAST_STATE_PATH.read_text(encoding="utf-8"))
+            return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.warning("读取定时播报状态失败，将按无记录处理: %s", exc)
+            return {}
+
+    def _save_broadcast_state(self, state: Dict[str, str]) -> None:
+        try:
+            _BROADCAST_STATE_PATH.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.error("保存定时播报状态失败: %s", exc, exc_info=True)
+
+    async def _broadcast_loop(self) -> None:
+        while True:
+            try:
+                await self._run_scheduled_broadcast(datetime.now(_CHINA_TZ))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("定时播报任务执行失败: %s", exc, exc_info=True)
+            now = datetime.now(_CHINA_TZ)
+            await asyncio.sleep(max(1.0, 60.0 - now.second - now.microsecond / 1_000_000))
+
+    async def _run_scheduled_broadcast(self, now: datetime) -> bool:
+        if not self.config.broadcast.enabled:
+            return False
+        target = self._parse_broadcast_time(self.config.broadcast.time)
+        if target is None or (now.hour, now.minute) != target:
+            return False
+        date_key = now.date().isoformat()
+        state = self._load_broadcast_state()
+        pending = [group for group in self._broadcast_groups() if state.get(group) != date_key]
+        if not pending:
+            return False
+        for group in pending:
+            state[group] = date_key
+        self._save_broadcast_state(state)
+
+        providers = self._collect_providers()
+        records = await self._query_records(providers) if providers else []
+        text_report = format_text_report(records) if providers else "💰 API 平台余额\n———\n暂无可查询的平台"
+        success = sum(isinstance(item, _BalanceRecord) and item.status_ok for _, item in records)
+        failed = len(records) - success
+        header = (self.config.broadcast.header or "每日 API 平台余额播报").strip()
+        heading = f"{header}\n北京时间：{now:%Y-%m-%d %H:%M}\n查询结果：成功 {success}，失败 {failed}"
+        nodes = [{"user_id": "0", "nickname": "余额播报", "segments": [{"type": "text", "content": heading}]}]
+        fmt = self._output_format()
+        image_b64 = (
+            await self._render_records_image(records, now)
+            if providers and fmt in (OUTPUT_FORMAT_IMAGE, OUTPUT_FORMAT_BOTH)
+            else None
+        )
+        if image_b64 and fmt in (OUTPUT_FORMAT_IMAGE, OUTPUT_FORMAT_BOTH):
+            nodes.append({"user_id": "0", "nickname": "余额播报", "segments": [{"type": "image", "content": image_b64}]})
+        if fmt in (OUTPUT_FORMAT_TEXT, OUTPUT_FORMAT_BOTH) or not image_b64:
+            nodes.append({"user_id": "0", "nickname": "余额播报", "segments": [{"type": "text", "content": text_report}]})
+        for group in pending:
+            await self._send_broadcast_to_group(group, nodes)
+        return True
+
+    def _output_format(self) -> str:
+        fmt = (self.config.settings.output_format or OUTPUT_FORMAT_TEXT).lower()
+        return fmt if fmt in OUTPUT_FORMATS else OUTPUT_FORMAT_TEXT
+
+    async def _render_records_image(self, records, queried_at: Optional[datetime] = None) -> Optional[str]:
+        try:
+            rendered = await self.ctx.render.html2png(
+                render_html_card(records, queried_at=queried_at), selector="#card",
+                viewport={"width": 720, "height": 480}, device_scale_factor=2.0,
+            )
+            return (rendered or {}).get("image_base64")
+        except Exception as exc:
+            logger.warning("余额卡片渲染失败，回退文本: %s", exc)
+            return None
+
+    async def _send_broadcast_to_group(self, group_id: str, nodes: List[Dict[str, Any]]) -> None:
+        try:
+            try:
+                stream = await self.ctx.chat.get_stream_by_group_id(group_id, platform="qq")
+            except TypeError:
+                stream = await self.ctx.chat.get_stream_by_group_id(group_id)
+            if not stream:
+                logger.warning("未找到群聊 %s 的聊天流，跳过播报", group_id)
+                return
+            stream_id = self._extract_stream_id(stream)
+            if not stream_id:
+                logger.warning("群聊 %s 的聊天流缺少 stream_id", group_id)
+                return
+            sent = await self.ctx.send.forward(nodes, stream_id)
+            if sent is False:
+                logger.error("向群聊 %s 发送合并播报失败：send.forward 返回 False", group_id)
+        except Exception as exc:
+            logger.error("向群聊 %s 发送定时播报失败: %s", group_id, exc, exc_info=True)
+
+    @staticmethod
+    def _extract_stream_id(stream: Any) -> str:
+        if isinstance(stream, (str, int)):
+            return str(stream).strip()
+        if isinstance(stream, dict):
+            direct = stream.get("stream_id") or stream.get("session_id")
+            if direct:
+                return str(direct).strip()
+            nested = stream.get("stream")
+            if isinstance(nested, dict):
+                return str(nested.get("stream_id") or nested.get("session_id") or "").strip()
+        return str(getattr(stream, "stream_id", None) or getattr(stream, "session_id", None) or "").strip()
+
     # ── 命令：查询余额 ────────────────────────────────────────────────
 
     @Command(
@@ -288,7 +492,7 @@ class APIBalancePlugin(MaiBotPlugin):
         providers = self._collect_providers()
         if not providers:
             await self.ctx.send.text(
-                "❌ 未启用任何平台。请在配置中启用至少一个平台并填入 API Key。",
+                "❌ 未启用任何可查询平台。请启用至少一个平台并配置有效访问凭证。",
                 stream_id,
             )
             return False, "无可用平台", 1
@@ -297,112 +501,19 @@ class APIBalancePlugin(MaiBotPlugin):
             f"⏳ 正在并行查询 {len(providers)} 个平台…", stream_id,
         )
 
-        # 并行查询
-        async def _run(
-            provider: _BalanceProvider,
-        ) -> Tuple[_BalanceProvider, Any]:
-            try:
-                payload = await asyncio.to_thread(provider.fetch_sync)
-                return provider, payload
-            except Exception as exc:
-                return provider, exc
-
-        results = await asyncio.gather(*[_run(p) for p in providers])
-
-        # 转换为结构化记录
-        records: List[Tuple[_BalanceProvider, Any]] = []
-        for provider, payload_or_exc in results:
-            if isinstance(payload_or_exc, Exception):
-                records.append((provider, payload_or_exc))
-                continue
-            try:
-                records.append(
-                    (provider, provider.to_record(payload_or_exc))
-                )
-            except Exception as exc:
-                logger.error(
-                    "%s 解析响应失败: %s",
-                    provider.display_name,
-                    exc,
-                    exc_info=True,
-                )
-                records.append((provider, exc))
-
-        # 按 output_format 输出
-        fmt = (
-            self.config.settings.output_format or OUTPUT_FORMAT_TEXT
-        ).lower()
-        if fmt not in OUTPUT_FORMATS:
-            fmt = OUTPUT_FORMAT_TEXT
-
+        records = await self._query_records(providers)
+        fmt = self._output_format()
+        image_b64 = None
         if fmt in (OUTPUT_FORMAT_IMAGE, OUTPUT_FORMAT_BOTH):
-            image_b64: Optional[str] = None
-            failure_stage: str = ""
-            failure_exc: Optional[Exception] = None
-
-            try:
-                html_doc = render_html_card(records)
-            except Exception as exc:
-                failure_stage = "html_compose"
-                failure_exc = exc
-            else:
-                try:
-                    rendered = await self.ctx.render.html2png(
-                        html_doc,
-                        selector="#card",
-                        viewport={"width": 720, "height": 480},
-                        device_scale_factor=2.0,
-                    )
-                except Exception as exc:
-                    failure_stage = "html2png"
-                    failure_exc = exc
-                else:
-                    image_b64 = (rendered or {}).get("image_base64")
-                    if not image_b64:
-                        failure_stage = "html2png_empty"
-
+            image_b64 = await self._render_records_image(records, datetime.now(_CHINA_TZ))
             if image_b64:
                 try:
                     await self.ctx.send.image(image_b64, stream_id)
                 except Exception as exc:
-                    failure_stage = "send_image"
-                    failure_exc = exc
-
-            if failure_stage:
-                stage_msg = {
-                    "html_compose": (
-                        "HTML 卡片组装失败",
-                        "⚠️ 卡片组装失败，已回退为文本模式",
-                    ),
-                    "html2png": (
-                        "html2png 渲染失败",
-                        "⚠️ 卡片渲染失败，已回退为文本模式",
-                    ),
-                    "html2png_empty": (
-                        "html2png 未返回 image_base64",
-                        "⚠️ 渲染结果为空，已回退为文本模式",
-                    ),
-                    "send_image": (
-                        "图片发送失败",
-                        "⚠️ 图片发送失败，已回退为文本模式",
-                    ),
-                }[failure_stage]
-                if failure_exc is not None:
-                    logger.error(
-                        "%s，回退文本模式: %s",
-                        stage_msg[0],
-                        failure_exc,
-                        exc_info=True,
-                    )
-                else:
-                    logger.warning("%s，回退文本模式", stage_msg[0])
-                await self.ctx.send.text(stage_msg[1], stream_id)
-                fmt = OUTPUT_FORMAT_TEXT
-
-        if fmt in (OUTPUT_FORMAT_TEXT, OUTPUT_FORMAT_BOTH):
-            await self.ctx.send.text(
-                format_text_report(records), stream_id
-            )
+                    logger.error("图片发送失败，回退文本模式: %s", exc, exc_info=True)
+                    image_b64 = None
+        if fmt in (OUTPUT_FORMAT_TEXT, OUTPUT_FORMAT_BOTH) or not image_b64:
+            await self.ctx.send.text(format_text_report(records), stream_id)
 
         return True, "余额查询完成", 1
 
@@ -439,8 +550,9 @@ class APIBalancePlugin(MaiBotPlugin):
                 "❌ 格式错误。\n"
                 "用法：\n"
                 "/添加平台 <类型> <API Key> [备注名] [URL]\n"
-                "类型：deepseek / siliconflow / newapi / openrouter / moonshot / openai / onething / minimax\n"
-                "NewAPI 需额外提供用户ID：/添加平台 newapi <令牌> <用户ID> [备注名] [URL]",
+                f"类型：{' / '.join(PLATFORM_TYPES)}\n"
+                "NewAPI：/添加平台 newapi <令牌> <用户ID> [备注名] [URL]\n"
+                "火山方舟：/添加平台 volcengine <AK> <SK> [备注名]",
                 stream_id,
             )
             return False, "格式错误", 1
@@ -487,6 +599,25 @@ class APIBalancePlugin(MaiBotPlugin):
             await self.ctx.send.text(
                 f"✅ 已添加 NewAPI（用户ID:{user_id}）" + (f"「{label}」" if label else ""),
                 stream_id,
+            )
+        elif platform_type == "volcengine":
+            parts = rest.split(maxsplit=2)
+            if len(parts) < 2:
+                await self.ctx.send.text(
+                    "❌ 火山方舟格式：/添加平台 volcengine <Access Key ID> <Secret Access Key> [备注名]",
+                    stream_id,
+                )
+                return False, "参数不足", 1
+            access_key_id, secret_access_key = parts[0], parts[1]
+            label = parts[2] if len(parts) > 2 else ""
+            new_inst = {
+                "type": "volcengine", "enabled": True,
+                "access_key_id": access_key_id, "secret_access_key": secret_access_key,
+            }
+            if label:
+                new_inst["label"] = label
+            await self.ctx.send.text(
+                "✅ 已添加火山方舟" + (f"「{label}」" if label else ""), stream_id
             )
         else:
             # 通用格式: /添加平台 <类型> <API Key> [备注名] [URL]
@@ -573,10 +704,10 @@ class APIBalancePlugin(MaiBotPlugin):
         platform_type = match.group(1).lower()
         instance_name = (match.group(2) or "").strip()
 
-        if platform_type not in PLATFORM_TYPES:
+        if platform_type not in KNOWN_PLATFORM_TYPES:
             await self.ctx.send.text(
                 f"❌ 不支持的平台类型「{platform_type}」。"
-                f"支持：{', '.join(PLATFORM_TYPES)}",
+                f"支持删除：{', '.join(KNOWN_PLATFORM_TYPES)}",
                 stream_id,
             )
             return False, "不支持的平台类型", 1
@@ -670,11 +801,17 @@ class APIBalancePlugin(MaiBotPlugin):
                 plat_name = _PLATFORM_DISPLAY_NAMES.get(ptype, ptype)
                 status = "✅" if inst.enabled else "⭕"
                 label = f"「{inst.label}」" if inst.label else ""
-                key_ok = "已配置" if inst.api_key.strip() else "⚠️ 未配置 Key"
+                if ptype == "volcengine":
+                    key_ok = "AK/SK 已配置" if inst.access_key_id.strip() and inst.secret_access_key.strip() else "⚠️ AK/SK 不完整"
+                else:
+                    key_ok = "已配置" if inst.api_key.strip() else "⚠️ 未配置 Key"
                 url = inst.base_url or "(默认)"
                 extra = ""
                 if ptype == "newapi" and inst.user_id:
                     extra = f" UID:{inst.user_id}"
+                if ptype == "siliconflow":
+                    status = "⏸️"
+                    extra += " 接口暂不可用"
                 lines.append(
                     f"{i}. [{ptype}] {plat_name}{label} {status} | {key_ok} | {url}{extra}"
                 )

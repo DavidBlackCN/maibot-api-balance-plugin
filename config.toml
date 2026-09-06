@@ -1,10 +1,10 @@
 # ============================================================
-# API 余额查询插件 v1.1.0 — 配置
+# API 余额查询插件 v1.2.0 — 配置
 # ============================================================
 
 [plugin]
 name = "maibot_api_balance_plugin"
-config_version = "1.1.0"
+config_version = "1.2.0"
 enabled = true
 
 [settings]
@@ -13,22 +13,22 @@ admin_only = true
 admin_user_ids = []
 output_format = "image"
 
+[broadcast]
+enabled = false
+group_ids = []
+time = "09:00"
+header = "每日 API 平台余额播报"
+
 # ----------------------------------------------------------
 # API 平台列表（统一格式）
 # 每个 [[api_instances]] 代表一个平台/账户，type 区分类型。
-# 支持: deepseek / siliconflow / newapi / openrouter / moonshot / openai / onething / minimax
+# 支持: deepseek / newapi / openrouter / moonshot / openai / onething / minimax / volcengine
 # ----------------------------------------------------------
 
 # [[api_instances]]
 # type = "deepseek"
 # enabled = true
 # label = "个人号"
-# api_key = "sk-xxx"
-
-# [[api_instances]]
-# type = "siliconflow"
-# enabled = true
-# label = "主账户"
 # api_key = "sk-xxx"
 
 # [[api_instances]]
@@ -48,6 +48,13 @@ output_format = "image"
 # type = "moonshot"
 # enabled = true
 # api_key = "sk-xxx"
+
+# [[api_instances]]
+# type = "volcengine"
+# enabled = true
+# label = "主账户"
+# access_key_id = "AKLT..."
+# secret_access_key = "..."
 
 # [[api_instances]]
 # type = "openai"

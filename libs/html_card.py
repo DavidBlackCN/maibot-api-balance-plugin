@@ -4,6 +4,7 @@
 """
 
 import html
+from datetime import datetime
 from typing import Any, List, Sequence, Tuple
 
 from .constants import CURRENCY_SYMBOLS, PLATFORM_TYPES, PLUGIN_VERSION
@@ -12,11 +13,15 @@ from .providers import _BalanceProvider, _BalanceRecord
 
 def render_html_card(
     records: Sequence[Tuple[_BalanceProvider, Any]],
+    queried_at: datetime | None = None,
 ) -> str:
     """把所有平台的结果渲染为单张 HTML 卡片。"""
     sections: List[str] = []
     for provider, item in records:
         sections.append(_render_provider_section(provider, item))
+    success = sum(isinstance(item, _BalanceRecord) and item.status_ok for _, item in records)
+    failed = len(records) - success
+    time_text = queried_at.strftime("%Y-%m-%d %H:%M") if queried_at else datetime.now().strftime("%Y-%m-%d %H:%M")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><style>
@@ -46,6 +51,8 @@ body {{
   color: #6b7280;
   margin: 0 0 18px 0;
 }}
+.summary {{ display:flex; gap:8px; margin:0 0 18px; }}
+.summary span {{ padding:5px 10px; border-radius:8px; font-size:12px; background:#eef2ff; color:#4338ca; }}
 .provider {{
   border: 1px solid #e5e7eb;
   border-radius: 12px;
@@ -64,6 +71,8 @@ body {{
   font-size: 16px;
   font-weight: 600;
   color: #111827;
+  max-width: 500px;
+  overflow-wrap: anywhere;
 }}
 .status-pill {{
   font-size: 12px;
@@ -121,8 +130,9 @@ body {{
 <body>
 <div id="card">
   <h1 class="card-title">💰 API 平台余额</h1>
-  <p class="card-subtitle">共 {len(records)} 个平台</p>
-  {''.join(sections)}
+  <p class="card-subtitle">查询时间 {html.escape(time_text)} · 北京时间</p>
+  <div class="summary"><span>共 {len(records)} 个平台</span><span>成功 {success}</span><span>失败 {failed}</span></div>
+  {''.join(sections) if sections else '<div class="provider"><div class="note-text">暂无可查询的平台</div></div>'}
   <div class="footer">MaiBot · API Balance Plugin v{PLUGIN_VERSION}</div>
 </div>
 </body></html>"""
@@ -139,7 +149,9 @@ def _render_provider_section(
     # --- 错误处理 ---
     if isinstance(item, _BalanceHTTPError):
         if item.status in (401, 403):
-            err_text = "❌ API Key 无效或权限不足"
+            detail = item.detail.strip()
+            suffix = f"：{html.escape(detail)}" if detail else ""
+            err_text = f"❌ 访问凭证无效或权限不足{suffix}"
         else:
             err_text = f"❌ HTTP {item.status}：{html.escape(item.detail)}"
         return (
@@ -254,9 +266,12 @@ def render_platform_list_card(
             ptype = getattr(inst, "type", "?") or "?"
             label = getattr(inst, "label", "") or ""
             enabled = getattr(inst, "enabled", False)
-            has_key = bool((getattr(inst, "api_key", "") or "").strip())
+            if ptype == "volcengine":
+                has_key = bool((getattr(inst, "access_key_id", "") or "").strip() and (getattr(inst, "secret_access_key", "") or "").strip())
+            else:
+                has_key = bool((getattr(inst, "api_key", "") or "").strip())
             url = getattr(inst, "base_url", "") or "（默认）"
-            status = "✅" if enabled else "⭕"
+            status = "⏸️" if ptype == "siliconflow" else ("✅" if enabled else "⭕")
             key_badge = "🔑" if has_key else "⚠️"
             label_str = f"「{html.escape(label)}」" if label else ""
             rows_html.append(
@@ -266,7 +281,8 @@ def render_platform_list_card(
                 f'<td>{label_str}</td>'
                 f'<td style="text-align:center">{status}</td>'
                 f'<td style="text-align:center">{key_badge}</td>'
-                f'<td style="font-size:11px;color:#6b7280">{html.escape(url)}</td>'
+                f'<td style="font-size:11px;color:#6b7280">{html.escape(url)}'
+                f'{"<br>接口暂不可用" if ptype == "siliconflow" else ""}</td>'
                 f'</tr>'
             )
     else:
@@ -305,7 +321,7 @@ td {{ padding: 6px 6px; border-bottom: 1px solid #f3f4f6; }}
   <table>
     <thead><tr>
       <th style="width:30px">#</th><th>类型</th><th>名称</th>
-      <th style="width:40px">状态</th><th style="width:40px">Key</th><th>地址</th>
+      <th style="width:40px">状态</th><th style="width:40px">凭证</th><th>地址</th>
     </tr></thead>
     <tbody>{rows}</tbody>
   </table>

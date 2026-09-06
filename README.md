@@ -13,13 +13,14 @@
 | 平台 | 查询方式 | 说明 |
 |------|----------|------|
 | **DeepSeek** | API Key | `/user/balance`，多币种（CNY/USD） |
-| **SiliconFlow（硅基流动）** | API Key | `/v1/user/info`，区分代金券和充值余额 |
+| **SiliconFlow（硅基流动）** | 暂停查询 | 官方余额接口暂不可用；保留兼容代码和旧配置删除能力 |
 | **NewAPI** | 系统访问令牌 + 用户ID | `/api/user/self`，多站点支持 |
 | **OpenRouter** 🆕 | API Key | `/api/v1/credits` |
 | **Moonshot（月之暗面）** 🆕 | API Key | `/v1/users/me/balance` |
 | **OpenAI** 🆕 | API Key | `/v1/dashboard/billing/subscription` |
 | **OneThing（网心云）** 🆕 | API Key | `/api/v1/account/wallet/detail` |
 | **MiniMax** 🆕 | API Key | `/v1/api/openplatform/coding_plan/remains` |
+| **火山方舟** 🆕 | 火山引擎 AK/SK | 费用中心 `QueryBalanceAcct`，查询方舟扣费账户余额 |
 
 ## 安装
 
@@ -68,19 +69,135 @@ label = "自建站A"
 api_key = "系统访问令牌"
 base_url = "https://my-newapi.example.com"
 user_id = "10001"
+
+[[api_instances]]
+type = "volcengine"
+enabled = true
+label = "主账户"
+access_key_id = "AKLT..."
+secret_access_key = "..."
 ```
 
 所有平台均支持多账户（多个同 type 的 `[[api_instances]]` 块），通过 `label` 区分。
 
-**各平台 API Key 获取方式：**
+**各平台访问凭证获取方式：**
 - **DeepSeek**：[platform.deepseek.com](https://platform.deepseek.com/api_keys) → API Keys
-- **SiliconFlow**：[siliconflow.cn](https://siliconflow.cn/account/ak) → API 密钥
-- **NewAPI**：站点「个人设置」→「生成系统访问令牌」（不是 sk- 开头！）+ 记下用户 ID
+- **NewAPI**：站点「个人设置」→「安全设置」→「系统访问令牌」，同时记下当前账号的用户 ID
 - **OpenRouter**：[openrouter.ai/keys](https://openrouter.ai/keys) → Create Key
 - **Moonshot**：[platform.moonshot.cn](https://platform.moonshot.cn) → API Keys
 - **OpenAI**：[platform.openai.com/api-keys](https://platform.openai.com/api-keys)
 - **OneThing**：[onethingai.com](https://onethingai.com) → API 密钥
 - **MiniMax**：[minimaxi.com](https://www.minimaxi.com) → API 密钥
+- **火山方舟**：[火山引擎访问控制](https://console.volcengine.com/iam/) → 创建 IAM 用户、授权费用中心只读策略并创建访问密钥
+
+### NewAPI：获取凭证与添加平台
+
+NewAPI 的余额查询调用站点管理接口 `/api/user/self`，需要的是**系统访问令牌**，不是用于调用模型的 `sk-...` API Key。
+
+1. 登录需要查询余额的 NewAPI 站点。不同站点的界面名称可能略有差异。
+2. 打开「个人设置」→「安全设置」→「系统访问令牌」，生成并复制系统访问令牌。
+3. 在个人资料或账户信息页面找到当前账号的数字用户 ID。该 ID 必须与生成令牌的登录用户一致。
+4. 自建或第三方站点还要记下站点根地址，例如 `https://newapi.example.com`。不要填写 `/api/user/self` 路径。
+
+命令格式：
+
+```text
+/添加平台 newapi <系统访问令牌> <用户ID> [备注名] [站点地址]
+```
+
+参数说明：
+
+| 参数 | 是否必填 | 内容 |
+|------|----------|------|
+| `newapi` | 是 | 固定的平台类型，必须原样输入 |
+| `系统访问令牌` | 是 | 在 NewAPI「个人设置 / 安全设置」中生成的管理令牌，写入配置的 `api_key` 字段 |
+| `用户ID` | 是 | 当前 NewAPI 账号的数字 ID，写入 `user_id`；必须与令牌所属用户一致 |
+| `备注名` | 否 | 用于区分多个站点或账号，例如 `自建站A`；填写站点地址时必须同时填写该位置 |
+| `站点地址` | 否 | NewAPI 站点根地址，写入 `base_url`；不填时使用插件默认地址 |
+
+命令通过空格区分参数。需要同时填写站点地址时，`备注名` 请使用不含空格的短名称；如果只填写备注名且不填写地址，备注名可以包含空格。
+
+示例：
+
+```text
+# 使用自建站点；access-token、10001 和域名均为示例
+/添加平台 newapi access-token 10001 自建站A https://newapi.example.com
+```
+
+对应的 TOML 配置如下：
+
+```toml
+[[api_instances]]
+type = "newapi"
+enabled = true
+label = "自建站A"
+api_key = "系统访问令牌"
+user_id = "10001"
+base_url = "https://newapi.example.com"
+```
+
+### 火山方舟：创建 IAM 用户、获取 AK/SK 与添加平台
+
+插件查询的是火山方舟消费所使用的**火山引擎资金账户余额**。推荐为插件单独创建 IAM 用户并授予系统策略 `BillingCenterReadOnlyAccess`，避免使用主账号密钥或授予写入权限。该策略提供费用中心全部只读权限，包括账户余额页面及相关查询 OpenAPI。
+
+1. 使用火山引擎主账号或有 IAM 管理权限的账号打开[访问控制控制台](https://console.volcengine.com/iam/)。
+2. 进入「身份管理」→「用户」，创建一个供本插件专用的 IAM 用户，例如 `maibot-balance`。插件只调用 API，不要求开启控制台登录。
+3. 在用户授权页面添加系统预设策略 `BillingCenterReadOnlyAccess`。
+4. 打开该 IAM 用户的详情页，进入「密钥」页签并创建访问密钥。创建结果页会列出用户名、`Access Key ID` 和 `Secret Access Key`；未开启控制台登录时，密码位置可能显示为 `-`，这是正常现象。
+5. 立即复制两项内容或保存 CSV。`Secret Access Key` 通常只在创建时完整展示。
+
+命令格式：
+
+```text
+/添加平台 volcengine <Access Key ID> <Secret Access Key> [备注名]
+```
+
+参数说明：
+
+| 参数 | 是否必填 | 内容 |
+|------|----------|------|
+| `volcengine` | 是 | 固定的平台类型，必须原样输入 |
+| `Access Key ID` | 是 | IAM 用户密钥页面生成的 AK，通常以 `AKLT` 开头，写入 `access_key_id` |
+| `Secret Access Key` | 是 | 与该 AK 配套的 SK，写入 `secret_access_key` |
+| `备注名` | 否 | 仅用于卡片和平台列表显示，例如 `方舟主账户`；不参与鉴权，可以包含空格 |
+
+示例：
+
+```text
+# 以下凭证均为占位符，请替换为新建 IAM 用户的真实 AK/SK
+/添加平台 volcengine AKLTxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxxxxxxxx 方舟主账户
+```
+
+对应的 TOML 配置如下：
+
+```toml
+[[api_instances]]
+type = "volcengine"
+enabled = true
+label = "方舟主账户"
+access_key_id = "AKLTxxxxxxxxxxxxxxxx"
+secret_access_key = "xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+配置后可先执行 `/平台列表` 检查凭证是否完整，再执行 `/余额` 验证查询。如果返回权限不足，请确认策略授予的是 `BillingCenterReadOnlyAccess`，并等待刚完成的 IAM 授权生效。
+
+费用中心虽然通过通用地址 `open.volcengineapi.com` 提供服务，但签名区域固定使用 `cn-north-1`；插件会自动处理该参数，无需在配置中填写。
+
+`/添加平台` 消息本身包含明文凭证。优先通过 MaiBot WebUI 的密码输入框或直接编辑 `config.toml` 配置；如需使用命令，请在受控的私聊中执行并及时删除包含凭证的聊天记录。
+
+### 定时播报
+
+定时播报默认关闭。多个群共用一个北京时间，播报使用“说明头 + 余额总览”的合并消息：
+
+```toml
+[broadcast]
+enabled = true
+group_ids = ["123456789", "987654321"]
+time = "09:00"
+header = "每日 API 平台余额播报"
+```
+
+`time` 必须为 24 小时制 `HH:MM`。插件停机期间错过的播报不会补发；每个群每天最多尝试一次，某个群发送失败不会影响其他群。
 
 ## 命令
 
@@ -102,8 +219,11 @@ user_id = "10001"
 /添加平台 onething sk-xxx
 /添加平台 minimax sk-xxx
 
-# NewAPI 特殊格式：/添加平台 newapi <令牌> <用户ID> [备注名] [URL]
+# NewAPI：详细参数和获取方法见上文
 /添加平台 newapi access-token 10001 自建站A https://my.example.com
+
+# 火山方舟：详细参数和 IAM 授权方法见上文
+/添加平台 volcengine AKLTxxxxxxxx xxxxxxxxxxxxxxxx 方舟主账户
 ```
 
 ### 权限控制
@@ -134,10 +254,11 @@ A: 确认 MaiBot 环境中已安装 Playwright Chromium。失败后会自动回�
 
 <details>
 
-<summary>关于uv环境下安装Playwright Chromium的一些说明</summary>
+<summary>关于 uv 环境下安装 Playwright Chromium 的一些说明</summary>
+
 Chromium 不需要在全局环境安装，需要让其出现在 MaiBot 渲染服务查找的路径下。
 
-``` bash
+```bash
 # 设置 MaiBot 期望的浏览器安装路径
 export PLAYWRIGHT_BROWSERS_PATH=/your-maibot-path/data/playwright-browsers
 
@@ -147,6 +268,7 @@ uv pip install playwright
 # 在 MaiBot 的 uv 环境中安装 Chromium
 uv run playwright install chromium
 ```
+
 </details>
 
 ### Q: NewAPI 查询显示「业务失败：Unauthorized」？
@@ -162,10 +284,18 @@ A: 不需要。在线命令修改后自动重载；手动编辑后插件会自�
 ## 鸣谢
 
 - [TAIY2020/llm_balance_plugin](https://github.com/TAIY2020/llm_balance_plugin) - 插件参考
+- [Ling-LA/maibot-llm-balance-monitor](https://github.com/Ling-LA/maibot-llm-balance-monitor) - 火山方舟与卡片展示参考
 - [BUGJI/astrbot_plugin_balance](https://github.com/BUGJI/astrbot_plugin_balance) - 插件参考
 - [DeepSeek V4 Pro](https://chat.deepseek.com/) - 辅助编写了此插件
 
 ## 更新日志
+
+### v1.2.0 (2026-09-06)
+
+- 暂停硅基流动余额查询，同时保留原 Provider 与旧配置兼容
+- 新增火山方舟（火山引擎费用中心）余额查询和 AK/SK 配置
+- 新增多个群共用时间的每日合并消息播报，默认关闭
+- 卡片新增查询时间、成功/失败统计并改善长名称及空状态显示
 
 ### v1.1.0 (2026-05-29)
 

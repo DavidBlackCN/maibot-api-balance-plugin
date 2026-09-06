@@ -47,7 +47,9 @@ def _format_error_line(
             item.detail,
         )
         if item.status in (401, 403):
-            return "❌ API Key 无效或权限不足"
+            detail = item.detail.strip()
+            suffix = f"：{detail}" if detail else ""
+            return f"❌ 访问凭证无效或权限不足{suffix}"
         return f"❌ HTTP {item.status}：{item.detail}"
     if isinstance(item, _BalanceBusinessError):
         logger.warning(

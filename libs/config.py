@@ -1,4 +1,4 @@
-"""配置模型 — maibot-api-balance-plugin v1.1.0
+"""配置模型 — maibot-api-balance-plugin v1.2.0
 
 统一使用 [[api_instances]] 数组格式，通过 type 字段区分平台类型。
 """
@@ -70,7 +70,7 @@ class APIInstanceSection(PluginConfigBase):
     __ui_label__ = "API 平台实例"
     type: str = Field(
         default="",
-        json_schema_extra={"label": "平台类型", "hint": "deepseek / siliconflow / newapi / openrouter / moonshot / openai / onething / minimax"},
+        json_schema_extra={"label": "平台类型", "hint": "deepseek / newapi / openrouter / moonshot / openai / onething / minimax / volcengine"},
     )
     enabled: bool = Field(default=False, json_schema_extra={"label": "启用"})
     label: str = Field(
@@ -89,12 +89,40 @@ class APIInstanceSection(PluginConfigBase):
         default="",
         json_schema_extra={"label": "用户 ID（仅 NewAPI）", "hint": "NewAPI 站点用户管理页面的数字 ID"},
     )
+    access_key_id: str = Field(
+        default="",
+        json_schema_extra={"label": "Access Key ID（仅火山方舟）", "x-widget": "password"},
+    )
+    secret_access_key: str = Field(
+        default="",
+        json_schema_extra={"label": "Secret Access Key（仅火山方舟）", "x-widget": "password"},
+    )
+
+
+class BroadcastSection(PluginConfigBase):
+    """每日余额播报设置。"""
+
+    __ui_label__ = "定时播报"
+    enabled: bool = Field(default=False, json_schema_extra={"label": "启用每日播报"})
+    group_ids: List[str] = Field(
+        default_factory=list,
+        json_schema_extra={"label": "播报群聊", "hint": "QQ 群号列表；所有群共用同一时间"},
+    )
+    time: str = Field(
+        default="09:00",
+        json_schema_extra={"label": "每日播报时间", "hint": "北京时间，24 小时制 HH:MM"},
+    )
+    header: str = Field(
+        default="每日 API 平台余额播报",
+        json_schema_extra={"label": "播报说明"},
+    )
 
 
 class LLMBalanceConfig(PluginConfigBase):
     """插件完整配置。"""
     plugin: PluginSection = Field(default_factory=PluginSection)
     settings: SettingsSection = Field(default_factory=SettingsSection)
+    broadcast: BroadcastSection = Field(default_factory=BroadcastSection)
     api_instances: List[APIInstanceSection] = Field(
         default_factory=list, json_schema_extra={"label": "API 平台列表"}
     )

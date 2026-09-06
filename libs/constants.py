@@ -1,4 +1,4 @@
-"""常量定义 — maibot-api-balance-plugin v1.1.0"""
+"""常量定义 — maibot-api-balance-plugin v1.2.0"""
 
 import json
 import logging
@@ -18,7 +18,7 @@ def _load_manifest_version() -> str:
     return "0.0.0"
 
 PLUGIN_VERSION = _load_manifest_version()
-CONFIG_SCHEMA_VERSION = "1.1.0"
+CONFIG_SCHEMA_VERSION = "1.2.0"
 DEFAULT_TIMEOUT = 10
 
 # --- 平台端点注册表 ---
@@ -31,9 +31,13 @@ ENDPOINTS = {
     "openai":      ("https://api.openai.com", "/v1/dashboard/billing/subscription"),
     "onething":    ("https://api-lab.onethingai.com", "/api/v1/account/wallet/detail"),
     "minimax":     ("https://www.minimaxi.com", "/v1/api/openplatform/coding_plan/remains"),
+    "volcengine":  ("https://open.volcengineapi.com", "/"),
 }
 
-PLATFORM_TYPES = list(ENDPOINTS.keys())
+# 硅基流动接口暂不可用：保留端点和 Provider，避免破坏旧配置及后续恢复。
+PLATFORM_TYPES = [name for name in ENDPOINTS if name != "siliconflow"]
+LEGACY_PLATFORM_TYPES = ("siliconflow",)
+KNOWN_PLATFORM_TYPES = tuple(PLATFORM_TYPES) + LEGACY_PLATFORM_TYPES
 
 # --- 币种符号 ---
 CURRENCY_SYMBOLS = {"CNY": "￥", "USD": "$", "EUR": "€", "JPY": "¥"}
